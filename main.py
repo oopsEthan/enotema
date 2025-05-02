@@ -1,82 +1,104 @@
-import customtkinter as ctk
-import tkinter as tk
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QTextEdit, QFileDialog,
+    QMenuBar, QMenu
+)
+from PySide6.QtGui import QKeySequence, QTextCharFormat, QFont, QAction
+from PySide6.QtCore import Qt
 from cryptography.fernet import Fernet
+import sys
 
 key = b'0a05AKJZCXwFejpTn0gVzc_cFUAG5vCGmcFvywkIdDM='
-print(f"Key: {key}")
 fernet = Fernet(key)
 
-class NoteApp(ctk.CTk):
+class NoteApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.bind("<Control-s>", lambda event: self.save_note(False))
 
-        self.title("Note Taker")
-        self.geometry("600x500")
+        self.setWindowTitle("Enotema")
+        self.resize(600, 500)
 
-        # Textbox for writing
-        self.textbox = ctk.CTkTextbox(self, width=550, height=400)
-        self.textbox.pack(padx=20, pady=20, expand=True, fill="both")
+        self.textbox = QTextEdit(self)
+        self.setCentralWidget(self.textbox)
 
         self.create_menu()
+        self.bind_shortcuts()
 
     def create_menu(self):
-        menubar = tk.Menu(self)
+        menubar = self.menuBar()
 
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="New Note...", command=self.new_note)
-        file_menu.add_command(label="Save", command=lambda: self.save_note(False))
-        file_menu.add_command(label="Save and Encrypt", command=lambda: self.save_note(True))
-        file_menu.add_command(label="Load", command=self.load_note)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.quit)
-        menubar.add_cascade(label="File", menu=file_menu)
+        # File Menu
+        file_menu = menubar.addMenu("File")
 
-        # Edit menu
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        edit_menu.add_command(label="Undo")
-        edit_menu.add_command(label="Redo")
-        menubar.add_cascade(label="Edit", menu=edit_menu)
+        new_action = QAction("New Note...", self)
+        new_action.triggered.connect(self.new_note)
+        file_menu.addAction(new_action)
 
-        # Attach menu to window
-        self.config(menu=menubar)
-    
+        save_action = QAction("Save", self)
+        save_action.setShortcut(QKeySequence.Save)
+        save_action.triggered.connect(self.save_note)
+        file_menu.addAction(save_action)
+
+        save_enc_action = QAction("Save and Encrypt", self)
+        save_enc_action.triggered.connect(lambda: self.save_note(True))
+        file_menu.addAction(save_enc_action)
+
+        load_action = QAction("Load", self)
+        load_action.triggered.connect(self.load_note)
+        file_menu.addAction(load_action)
+
+        file_menu.addSeparator()
+        file_menu.addAction("Exit", self.close)
+
+        # Edit Menu
+        edit_menu = menubar.addMenu("Edit")
+
+        undo_action = QAction("Undo", self)
+        undo_action.triggered.connect(self.textbox.undo)
+        edit_menu.addAction(undo_action)
+
+        redo_action = QAction("Redo", self)
+        redo_action.triggered.connect(self.textbox.redo)
+        edit_menu.addAction(redo_action)
+
+    def bind_shortcuts(self):
+        self.textbox.setFocus()
+        self.textbox.setShortcutEnabled(True)
+
+        self.textbox.shortcut = QKeySequence(Qt.CTRL | Qt.Key_A)
+        self.textbox.addAction(QAction(self, shortcut=self.textbox.shortcut, triggered=self.select_all))
+
+        bold_action = QAction(self)
+        bold_action.setShortcut(QKeySequence.Bold)
+        bold_action.triggered.connect(self.bold_text)
+        self.addAction(bold_action)
+
     def new_note(self):
-        self.textbox.delete("1.0", "end")
+        self.textbox.clear()
 
-    def save_note(self, permission_to_encrypt=False) -> bool:
-        content = self.textbox.get("1.0", "end").strip()
+    def save_note(self, encrypt=False):
+        content = self.textbox.toPlainText()
 
-        filename = tk.filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
-            title="Save Note"
-        )
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Note", "", "Text Files (*.txt);;All Files (*)")
+        if not filename:
+            return
 
         try:
-            if permission_to_encrypt:
+            if encrypt:
                 content = fernet.encrypt(content.encode())
-
                 if not filename.endswith(".enc"):
                     filename += ".enc"
-
                 with open(filename, "wb") as file:
                     file.write(content)
             else:
                 with open(filename, "w", encoding="utf-8") as file:
                     file.write(content)
-            return True
-        
         except Exception as e:
             print("Save failed:", e)
-            return False
-    
+
     def load_note(self):
-        filename = tk.filedialog.askopenfilename(
-            filetypes=[("Text Files", "*.txt *.enc"), ("All Files", "*.*")],
-            title="Open Note"
-        )
+        filename, _ = QFileDialog.getOpenFileName(self, "Open Note", "", "Text Files (*.txt *.enc);;All Files (*)")
+        if not filename:
+            return
 
         try:
             if filename.endswith(".enc"):
@@ -87,12 +109,22 @@ class NoteApp(ctk.CTk):
                 with open(filename, "r", encoding="utf-8") as file:
                     content = file.read()
 
-            self.textbox.delete("1.0", "end")
-            self.textbox.insert("1.0", content)
-
+            self.textbox.setPlainText(content)
         except Exception as e:
             print("Load failed:", e)
 
-if __name__ == "__main__":
-    app = NoteApp()
-    app.mainloop()
+    def select_all(self):
+        self.textbox.selectAll()
+
+    def bold_text(self):
+        cursor = self.textbox.textCursor()
+        if cursor.hasSelection():
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Bold)
+            cursor.mergeCharFormat(fmt)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = NoteApp()
+    window.show()
+    sys.exit(app.exec())
