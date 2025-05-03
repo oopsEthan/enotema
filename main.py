@@ -6,6 +6,9 @@ from PySide6.QtGui import QKeySequence, QTextCharFormat, QFont, QAction
 from PySide6.QtCore import Qt
 from cryptography.fernet import Fernet
 import sys, os
+from functools import partial
+
+from ui_elements import MENU_DATA
 
 key = b'0a05AKJZCXwFejpTn0gVzc_cFUAG5vCGmcFvywkIdDM='
 fernet = Fernet(key)
@@ -23,51 +26,44 @@ class NoteApp(QMainWindow):
 
         self.textbox = QTextEdit(self)
         self.setCentralWidget(self.textbox)
+        self.setStyleSheet("* { border: none; }")
 
-        self.current_filename = ""
-        self.textbox.textChanged.connect(lambda: self.adjust_filename(self.current_filename, True))
+        self.filename = ""
+        self.textbox.textChanged.connect(lambda: self.update_file_ext(True))
         self.create_menu()
         self.bind_shortcuts()
 
     def create_menu(self):
         menubar = self.menuBar()
+        
+        external_actions = {
+            "textbox.undo": self.textbox.undo,
+            "textbox.redo": self.textbox.redo
+        }
 
-        # File Menu
-        file_menu = menubar.addMenu("File")
+        for menu in MENU_DATA:
+            new_menu = menubar.addMenu(menu["title"])
+            for item in menu["items"]:
+                action = QAction(item["label"], self)
 
-        new_action = QAction("New Note...", self)
-        new_action.triggered.connect(self.new_note)
-        file_menu.addAction(new_action)
+                if item.get("shortcut"):
+                    action.setShortcut(item["shortcut"])
+                
+                if item["action"] in external_actions:
+                    func = external_actions[item["action"]]
+                else:
+                    func = getattr(self, item["action"])
 
-        save_action = QAction("Save", self)
-        save_action.setShortcut(QKeySequence.Save)
-        save_action.triggered.connect(self.save_note)
-        file_menu.addAction(save_action)
+                params = item.get("params")
+                if params:
+                    action.triggered.connect(partial(func, *params))
+                else:
+                    action.triggered.connect(func)
 
-        save_enc_action = QAction("Save and Encrypt", self)
-        save_enc_action.setShortcut(QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key_S))
-        save_enc_action.triggered.connect(lambda: self.save_note(True))
-        file_menu.addAction(save_enc_action)
+                new_menu.addAction(action)
 
-        load_action = QAction("Load", self)
-        load_action.triggered.connect(self.load_note)
-        file_menu.addAction(load_action)
-
-        file_menu.addSeparator()
-        file_menu.addAction("Exit", self.close)
-
-        # Edit Menu
-        edit_menu = menubar.addMenu("Edit")
-
-        undo_action = QAction("Undo", self)
-        undo_action.setShortcut(QKeySequence.Undo)
-        undo_action.triggered.connect(self.textbox.undo)
-        edit_menu.addAction(undo_action)
-
-        redo_action = QAction("Redo", self)
-        redo_action.setShortcut(QKeySequence.Redo)
-        redo_action.triggered.connect(self.textbox.redo)
-        edit_menu.addAction(redo_action)
+                if item["end"]:
+                    new_menu.addSeparator()
 
     def bind_shortcuts(self):
         self.textbox.setFocus()
@@ -75,82 +71,106 @@ class NoteApp(QMainWindow):
 
         self.textbox.shortcut = QKeySequence(Qt.CTRL | Qt.Key_A)
         self.textbox.addAction(QAction(self, shortcut=self.textbox.shortcut, triggered=self.select_all))
-        #textChanged
-        bold_action = QAction(self)
-        bold_action.setShortcut(QKeySequence.Bold)
-        bold_action.triggered.connect(self.bold_text)
-        self.addAction(bold_action)
 
-    def new_note(self):
+    def new_file(self):
         self.textbox.clear()
 
-    def save_note(self, encrypt=False) -> bool:
-        content = self.textbox.toPlainText()
+    def save_file(self, encrypt=False, force_save=False) -> bool:
+        content = self.textbox.toHtml() if self.has_formatting() else self.textbox.toPlainText()
 
-        filename, _ = QFileDialog.getSaveFileName(self, "Save Note", f"{self.current_filename}", "Text Files (*.txt);;All Files (*)")
-        if not filename:
-            return False
+        if not self.filename or force_save:
+            self.filename = self.request_filename(SAVE)
 
         try:
             if encrypt:
                 content = fernet.encrypt(content.encode())
-                if not filename.endswith(".enc"):
-                    filename = f"{filename}.enc"
-                with open(filename, "wb") as file:
+                if not self.filename.endswith(".enc"):
+                    self.filename = f"{self.filename}.enc"
+                with open(self.filename, "wb") as file:
                     file.write(content)
-                    QMessageBox.information(self, "Note Saved and Encrypted!", f"Saved to:\n{filename}")
+                    QMessageBox.information(self, "Note Saved and Encrypted!", f"Saved to:\n{self.filename}")
 
             else:
-                with open(filename, "w", encoding="utf-8") as file:
+                with open(self.filename, "w", encoding="utf-8") as file:
                     file.write(content)
-                    QMessageBox.information(self, "Note Saved!", f"Saved to:\n{filename}")
+                    QMessageBox.information(self, "Note Saved!", f"Saved to:\n{self.filename}")
 
         except Exception as e:
             print("Save failed:", e)
             return False
         
-        self.adjust_filename(filename)
+        self.update_file_ext()
         return True
 
-    def load_note(self):
-        filename, _ = QFileDialog.getOpenFileName(self, "Open Note", "", "Text Files (*.txt *.enc);;All Files (*)")
-        if not filename:
-            return
+    def open_file(self):
+        self.filename = self.request_filename(LOAD)
 
         try:
-            if filename.endswith(".enc"):
-                with open(filename, "rb") as file:
+            if self.filename.endswith(".enc"):
+                with open(self.filename, "rb") as file:
                     content = file.read()
                 content = fernet.decrypt(content).decode("utf-8")
             else:
-                with open(filename, "r", encoding="utf-8") as file:
+                with open(self.filename, "r", encoding="utf-8") as file:
                     content = file.read()
 
-            self.textbox.setPlainText(content)
+            self.textbox.setHtml(content)
+            
         except Exception as e:
             print("Load failed:", e)
         
-        self.adjust_filename(filename)
+        self.update_file_ext()
+
+    def request_filename(self, request):
+        if request == LOAD:
+            filename, _ = QFileDialog.getOpenFileName(self, "Open Note", "", "Text Files (*.enote *.txt *.enc);;All Files (*)")
+        elif request == SAVE and self.has_formatting():
+            filename, _ = QFileDialog.getSaveFileName(self, "Save Note", f"{self.filename}", "Enote (*.enote);;All Files (*)")
+        elif request == SAVE and not self.has_formatting():
+            filename, _ = QFileDialog.getSaveFileName(self, "Save Note", f"{self.filename}", "Text Files (*.txt);;All Files (*)")
+
+        if not filename:
+            return ""
+        return filename
+        
+    def update_file_ext(self, change_detected=False):
+        if self.filename.endswith(".enc"):
+            self.filename = os.path.splitext(self.filename)[0]
+
+        indicator = "*" if change_detected else ""
+        self.setWindowTitle(f"Enotema - {self.filename}{indicator}")
+        
+        self.filename = self.filename
 
     def select_all(self):
         self.textbox.selectAll()
 
-    def bold_text(self):
+    def format_text(self, format_request):
         cursor = self.textbox.textCursor()
-        if cursor.hasSelection():
-            fmt = QTextCharFormat()
-            fmt.setFontWeight(QFont.Bold)
-            cursor.mergeCharFormat(fmt)
-    
-    def adjust_filename(self, adjusted_filename, change_detected=False):
-        if adjusted_filename.endswith(".enc"):
-            adjusted_filename = os.path.splitext(adjusted_filename)[0]
+        if not cursor.hasSelection():
+            return
 
-        self.setWindowTitle(f"Enotema - {adjusted_filename}")
-        if change_detected:
-            self.setWindowTitle(f"Enotema - {adjusted_filename}*")
-        
-        self.current_filename = adjusted_filename
+        input_format = cursor.charFormat()
+        output_format = QTextCharFormat()
+
+        if format_request == "bold":
+            is_bold = input_format.fontWeight() == QFont.Bold
+            output_format.setFontWeight(QFont.Normal if is_bold else QFont.Bold)
+
+        elif format_request == "italic":
+            is_italics = input_format.fontItalic()
+            output_format.setFontItalic(not is_italics)
+
+        elif format_request == "underline":
+            is_underlined = input_format.fontUnderline()
+            output_format.setFontUnderline(not is_underlined)
+
+        cursor.mergeCharFormat(output_format)
+
+    def has_formatting(self):
+        plain = self.textbox.toPlainText()
+        html = self.textbox.toHtml()
+        return plain != html
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
